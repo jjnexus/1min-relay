@@ -95,9 +95,9 @@ else:
     logger.warning("Memcached is not available. Using in-memory storage for rate limiting. Not-Recommended")
 
 
-ONE_MIN_API_URL = "https://api.1min.ai/api/features"
+ONE_MIN_API_URL = "https://api.1min.ai/api/chat-with-ai"
 ONE_MIN_CONVERSATION_API_URL = "https://api.1min.ai/api/conversations"
-ONE_MIN_CONVERSATION_API_STREAMING_URL = "https://api.1min.ai/api/features?isStreaming=true"
+ONE_MIN_CONVERSATION_API_STREAMING_URL = "https://api.1min.ai/api/chat-with-ai?isStreaming=true"
 ONE_MIN_ASSET_URL = "https://api.1min.ai/api/assets"
 
 # Define the models that are available for use
@@ -335,7 +335,7 @@ def conversation():
 
     if not image:
         payload = {
-            "type": "CHAT_WITH_AI",
+            "type": "UNIFY_CHAT_WITH_AI",
             "model": request_data.get('model', 'mistral-nemo'),
             "promptObject": {
                 "prompt": all_messages,
@@ -345,7 +345,7 @@ def conversation():
         }
     else:
         payload = {
-            "type": "CHAT_WITH_IMAGE",
+            "type": "UNIFY_CHAT_WITH_AI",
             "model": request_data.get('model', 'mistral-nemo'),
             "promptObject": {
                 "prompt": all_messages,
@@ -360,7 +360,11 @@ def conversation():
         # Non-Streaming Response
         logger.debug("Non-Streaming AI Response")
         response = requests.post(ONE_MIN_API_URL, json=payload, headers=headers)
-        response.raise_for_status()
+        if response.status_code != 200:
+            logger.error(f"Upstream 1min.ai error: status={response.status_code} body={response.text[:500]}")
+            if response.status_code == 401:
+                return ERROR_HANDLER(1020)
+            return ERROR_HANDLER(response.status_code)
         one_min_response = response.json()
         
         transformed_response = transform_response(one_min_response, request_data, prompt_token)
@@ -372,11 +376,11 @@ def conversation():
     else:
         # Streaming Response
         logger.debug("Streaming AI Response")
-        response_stream = requests.post(ONE_MIN_CONVERSATION_API_STREAMING_URL, data=json.dumps(payload), headers=headers, stream=True)
+        response_stream = requests.post(ONE_MIN_CONVERSATION_API_STREAMING_URL, json=payload, headers=headers, stream=True)
         if response_stream.status_code != 200:
+            logger.error(f"Upstream 1min.ai error: status={response_stream.status_code} body={response_stream.text[:500]}")
             if response_stream.status_code == 401:
                 return ERROR_HANDLER(1020)
-            logger.error(f"An unknown error occurred while processing the user's request. Error code: {response_stream.status_code}")
             return ERROR_HANDLER(response_stream.status_code)
         return Response(stream_response(response_stream, request_data, request_data.get('model', 'mistral-nemo'), int(prompt_token)), content_type='text/event-stream')
 
@@ -476,43 +480,66 @@ def set_response_headers(response):
 
 def stream_response(response, request_data, model, prompt_tokens):
     all_chunks = ""
-    for chunk in response.iter_content(chunk_size=1024):
-        finish_reason = None
+    current_event = None
+    chunk_id = f"chatcmpl-{uuid.uuid4()}"
 
-        return_chunk = {
-            "id": f"chatcmpl-{uuid.uuid4()}",
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": request_data.get('model', 'mistral-nemo'),
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {
-                        "content": chunk.decode('utf-8')
-                    },
-                    "finish_reason": finish_reason
+    for line in response.iter_lines(decode_unicode=True):
+        if not line:
+            current_event = None
+            continue
+
+        if line.startswith("event:"):
+            current_event = line[len("event:"):].strip()
+            continue
+
+        if line.startswith("data:"):
+            raw_data = line[len("data:"):].strip()
+
+            if current_event == "content":
+                try:
+                    text_delta = json.loads(raw_data).get("content", "")
+                except (json.JSONDecodeError, KeyError):
+                    text_delta = raw_data
+                all_chunks += text_delta
+                return_chunk = {
+                    "id": chunk_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request_data.get('model', 'mistral-nemo'),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": text_delta},
+                            "finish_reason": None
+                        }
+                    ]
                 }
-            ]
-        }
-        all_chunks += chunk.decode('utf-8')
-        yield f"data: {json.dumps(return_chunk)}\n\n"
-        
+                yield f"data: {json.dumps(return_chunk)}\n\n"
+
+            elif current_event == "result":
+                try:
+                    result_obj = json.loads(raw_data).get("aiRecord", {}).get("aiRecordDetail", {}).get("resultObject", [])
+                    if result_obj:
+                        all_chunks = result_obj[0]
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass
+
+            elif current_event == "error":
+                logger.error(f"1min.ai stream error: {raw_data[:500]}")
+
     tokens = calculate_token(all_chunks)
     logger.debug(f"Finished processing streaming response. Completion tokens: {str(tokens)}")
     logger.debug(f"Total tokens: {str(tokens + prompt_tokens)}")
-        
-    # Final chunk when iteration stops
+
     final_chunk = {
-        "id": f"chatcmpl-{uuid.uuid4()}",
+        "id": chunk_id,
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": request_data.get('model', 'mistral-nemo'),
         "choices": [
             {
                 "index": 0,
-                "delta": {
-                    "content": ""    
-                },
+                "delta": {"content": ""},
                 "finish_reason": "stop"
             }
         ],
