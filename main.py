@@ -96,6 +96,7 @@ else:
 
 
 ONE_MIN_API_URL = "https://api.1min.ai/api/chat-with-ai"
+ONE_MIN_IMAGE_URL = "https://api.1min.ai/api/features"
 ONE_MIN_CONVERSATION_API_URL = "https://api.1min.ai/api/conversations"
 ONE_MIN_CONVERSATION_API_STREAMING_URL = "https://api.1min.ai/api/chat-with-ai?isStreaming=true"
 ONE_MIN_ASSET_URL = "https://api.1min.ai/api/assets"
@@ -157,15 +158,38 @@ image_generation_models = [
     "clipdrop",
     "midjourney",
     "midjourney_6_1",
-    # Learnardo
-    "6b645e3a-d64f-4341-a6d8-7a3690fbf042" # LEONARDO_PHOENIX
-    "b24e16ff-06e3-43eb-8d33-4416c2d75876" # LEONARDO_LIGHTNING_XL
-    "e71a1c2f-4f80-4800-934f-2c68979d8cc8" # LEONARDO_ANIME_XL
-    "1e60896f-3c26-4296-8ecc-53e2afecc132" # LEONARDO_DIFFUSION_XL
-    "aa77f04e-3eec-4034-9c07-d0f619684628" # LEONARDO_KINO_XL
-    "2067ae52-33fd-4a82-bb92-c2c55e7d2786" # LEONARDO_ALBEDO_BASE_XL
+    # Leonardo
+    "6b645e3a-d64f-4341-a6d8-7a3690fbf042",  # LEONARDO_PHOENIX
+    "b24e16ff-06e3-43eb-8d33-4416c2d75876",  # LEONARDO_LIGHTNING_XL
+    "e71a1c2f-4f80-4800-934f-2c68979d8cc8",  # LEONARDO_ANIME_XL
+    "1e60896f-3c26-4296-8ecc-53e2afecc132",  # LEONARDO_DIFFUSION_XL
+    "aa77f04e-3eec-4034-9c07-d0f619684628",  # LEONARDO_KINO_XL
+    "2067ae52-33fd-4a82-bb92-c2c55e7d2786",  # LEONARDO_ALBEDO_BASE_XL
     "black-forest-labs/flux-schnell",
 ]
+
+OPENAI_SIZE_TO_ASPECT_RATIO = {
+    "256x256":   "1:1",
+    "512x512":   "1:1",
+    "1024x1024": "1:1",
+    "1024x1792": "9:16",
+    "1792x1024": "16:9",
+    "1280x720":  "16:9",
+    "720x1280":  "9:16",
+}
+
+def size_to_aspect_ratio(size_str):
+    if size_str in OPENAI_SIZE_TO_ASPECT_RATIO:
+        return OPENAI_SIZE_TO_ASPECT_RATIO[size_str]
+    if "x" in size_str.lower():
+        try:
+            from math import gcd
+            w, h = map(int, size_str.lower().split("x"))
+            g = gcd(w, h)
+            return f"{w // g}:{h // g}"
+        except (ValueError, ZeroDivisionError):
+            pass
+    return "1:1"
 
 
 # Default values
@@ -301,20 +325,23 @@ def conversation():
         image_paths = []
         for item in user_input:
             if 'text' in item:
-                combined_text = '\n'.join(item['text'])
+                combined_text = item['text']
             try:
                 if 'image_url' in item:
                     if request_data.get('model', 'mistral-nemo') not in vision_supported_models:
                         return ERROR_HANDLER(1044, request_data.get('model', 'mistral-nemo'))
-                    if item['image_url']['url'].startswith("data:image/png;base64,"):
-                        base64_image = item['image_url']['url'].split(",")[1]
-                        binary_data = base64.b64decode(base64_image)
+                    image_url_value = item['image_url']['url']
+                    if image_url_value.startswith("data:image/"):
+                        header, base64_data = image_url_value.split(",", 1)
+                        mime_type = header.split(";")[0].split(":")[1]
+                        binary_data = base64.b64decode(base64_data)
                     else:
-                        binary_data = requests.get(item['image_url']['url'])
-                        binary_data.raise_for_status()  # Raise an error for bad responses
-                        binary_data = BytesIO(binary_data.content)
+                        img_response = requests.get(image_url_value)
+                        img_response.raise_for_status()
+                        mime_type = img_response.headers.get('Content-Type', 'image/png').split(';')[0]
+                        binary_data = BytesIO(img_response.content)
                     files = {
-                        'asset': ("relay" + str(uuid.uuid4()), binary_data, 'image/png')
+                        'asset': ("relay" + str(uuid.uuid4()), binary_data, mime_type)
                     }
                     asset = requests.post(ONE_MIN_ASSET_URL, files=files, headers=headers)
                     asset.raise_for_status()  # Raise an error for bad responses
@@ -322,8 +349,7 @@ def conversation():
                     image_paths.append(image_path)
                     image = True
             except Exception as e:
-                print(f"An error occurred e:" + str(e)[:60])
-                # Optionally log the error or return an appropriate response
+                logger.error(f"Image upload error: {str(e)[:200]}")
 
         user_input = str(combined_text)
 
@@ -350,7 +376,10 @@ def conversation():
             "promptObject": {
                 "prompt": all_messages,
                 "isMixed": False,
-                "imageList": image_paths
+                "attachments": {
+                    "images": image_paths,
+                    "files": []
+                }
             }
         }
     
@@ -409,7 +438,7 @@ def generate_images():
     num_images = request_data.get('n', 1)
     image_size = request_data.get('size', "1024x1024")
     model = request_data.get('model', 'black-forest-labs/flux-schnell')
-    if not model in image_generation_models:
+    if model not in image_generation_models:
         return ERROR_HANDLER(1044, model)
 
     payload = {
@@ -417,14 +446,15 @@ def generate_images():
         "model": model,
         "promptObject": {
             "prompt": prompt,
-            "n": num_images,
-            "size": image_size
+            "num_outputs": num_images,
+            "aspect_ratio": size_to_aspect_ratio(image_size),
+            "output_format": "webp"
         }
     }
 
     try:
         logger.debug("Image Generation Requested.")
-        response = requests.post(ONE_MIN_API_URL + "?isStreaming=false", json=payload, headers=headers)
+        response = requests.post(ONE_MIN_IMAGE_URL, json=payload, headers=headers)
         response.raise_for_status()
         one_min_response = response.json()
 
