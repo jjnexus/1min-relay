@@ -7,6 +7,8 @@ from waitress import serve
 import json
 import tiktoken
 import socket
+import ipaddress
+import urllib.parse
 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
 from mistral_common.protocol.instruct.messages import UserMessage
 from mistral_common.protocol.instruct.request import ChatCompletionRequest
@@ -192,6 +194,45 @@ def size_to_aspect_ratio(size_str):
     return "1:1"
 
 
+def _is_safe_image_url(url: str) -> bool:
+    """
+    驗證圖片 URL 是否安全，防止 SSRF 攻擊。
+    只允許 HTTPS，並封鎖私有/保留 IP 位址（包含雲端 metadata service）。
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+
+        if parsed.scheme != "https":
+            return False
+
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+
+        try:
+            addr_infos = socket.getaddrinfo(hostname, None)
+        except socket.gaierror:
+            return False
+
+        for addr_info in addr_infos:
+            ip_str = addr_info[4][0]
+            try:
+                addr = ipaddress.ip_address(ip_str)
+                if (addr.is_private or
+                        addr.is_loopback or
+                        addr.is_link_local or
+                        addr.is_reserved or
+                        addr.is_multicast):
+                    return False
+            except ValueError:
+                return False
+
+        return True
+
+    except Exception:
+        return False
+
+
 # Default values
 SUBSET_OF_ONE_MIN_PERMITTED_MODELS = ["mistral-nemo", "gpt-4o", "deepseek-chat"]
 PERMIT_MODELS_FROM_SUBSET_ONLY = False
@@ -244,6 +285,7 @@ def ERROR_HANDLER(code, model=None, key=None):
     # Handle errors in OpenAI-Structued Error
     error_codes = { # Internal Error Codes
         1002: {"message": f"The model {model} does not exist.", "type": "invalid_request_error", "param": None, "code": "model_not_found", "http_code": 400},
+        1007: {"message": "The provided image URL is not allowed. Only HTTPS URLs to public hosts are permitted.", "type": "invalid_request_error", "param": "messages", "code": "invalid_image_url", "http_code": 400},
         1020: {"message": f"Incorrect API key provided: {key}. You can find your API key at https://app.1min.ai/api.", "type": "authentication_error", "param": None, "code": "invalid_api_key", "http_code": 401},
         1021: {"message": "Invalid Authentication", "type": "invalid_request_error", "param": None, "code": None, "http_code": 401},
         1212: {"message": f"Incorrect Endpoint. Please use the /v1/chat/completions endpoint.", "type": "invalid_request_error", "param": None, "code": "model_not_supported", "http_code": 400},
@@ -336,7 +378,9 @@ def conversation():
                         mime_type = header.split(";")[0].split(":")[1]
                         binary_data = base64.b64decode(base64_data)
                     else:
-                        img_response = requests.get(image_url_value)
+                        if not _is_safe_image_url(image_url_value):
+                            return ERROR_HANDLER(1007)
+                        img_response = requests.get(image_url_value, timeout=10)
                         img_response.raise_for_status()
                         mime_type = img_response.headers.get('Content-Type', 'image/png').split(';')[0]
                         binary_data = BytesIO(img_response.content)
