@@ -1,88 +1,105 @@
 # 1min-Relay
 
-## Overview
-1min-Relay relays the 1min AI API to an OpenAI-compatible structure in under one minute. This project supports fast, reliable integration with various clients, features for managing conversation history and models, and optional hosted or self-hosted deployments. For details and updates, visit the hosted version and community channels below.
+A lightweight relay server that translates the [1min.ai](https://1min.ai) API into an OpenAI-compatible format, allowing any client that supports a custom OpenAI endpoint to use 1min.ai models.
 
-## Key links
-- Hosted version: https://www.kokodev.cc/1minrelay
-- Discord for support and updates: https://discord.gg/GQd3DrxXyj
-- Donation: https://donate.stripe.com/00w4gB1NbdI60afcKPgMw00
-- Paid hosted version and perks: https://shop.kokodev.cc/products
-- GitHub repository: https://github.com/kokofixcomputers/1min-relay
+## Supported API Endpoints
 
-## Features
-- bolt.diy compatibility: Seamless integration with bolt.diy
-- Conversation history: Preserve and manage conversations
-- Broad client compatibility: Works with most clients that support an OpenAI Custom Endpoint
-- Fast and reliable relay: Relays 1min AI API to an OpenAI-compatible structure quickly
-- User-friendly: Easy to install and use
-- Model exposure control: Expose all models or a predefined subset
-- Streaming support: Real-time streaming for faster interactions
-- Non-streaming support: Compatible with non-streaming workflows
-- Docker support: Simple deployment with Docker
-- Multi-document support: Upload and process documents (e.g., .docx, .pdf, .txt, .yaml, etc.)
-- Image support: Upload and process images
-- Architecture compatibility: ARM64 and AMD64 support
-- Concurrent requests: Handles multiple requests simultaneously
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /v1/models` | GET | List available models |
+| `POST /v1/chat/completions` | POST | Chat completions with streaming support |
+| `POST /v1/images/generations` | POST | Image generation |
 
-## Paid perks (optional)
-- Hosted service: Access anytime, anywhere
-- Latest features: Early access to features not yet in the public version (e.g., image generation)
-- Priority bug fixes: Faster resolution of common issues
-- Priority support: Faster assistance compared to the public version
+## Supported Models
 
-## Installation
+### Chat Models
+- **OpenAI**: `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-4`, `gpt-3.5-turbo`, `o1-preview`, `o1-mini`, `o3-mini`, `gpt-o1-pro`, `gpt-o4-mini`, `gpt-4.1-mini`, `gpt-4.1-nano`
+- **Anthropic**: `claude-3-7-sonnet-20250219`, `claude-3-5-sonnet-20240620`, `claude-3-opus-20240229`, `claude-3-sonnet-20240229`, `claude-3-haiku-20240307`, `claude-2.1`, `claude-instant-1.2`
+- **Google**: `gemini-1.5-pro`, `gemini-1.5-flash`, `gemini-1.0-pro`
+- **Mistral**: `mistral-large-latest`, `mistral-small-latest`, `mistral-nemo`, `open-mistral-7b`
+- **DeepSeek**: `deepseek-chat`, `deepseek-reasoner`
+- **Meta (via Replicate)**: `meta/llama-2-70b-chat`, `meta/meta-llama-3-70b-instruct`, `meta/meta-llama-3.1-405b-instruct`
+- **Cohere**: `command`
 
-### Bare-metal (local machine)
-- Prerequisites: Python 3.x, pip, Git
-- Clone the repository:
-  - git clone https://github.com/kokofixcomputers/1min-relay.git
-- Install dependencies:
-  - pip install -r requirements.txt
-- Run:
-  - python3 main.py
-  Note: On some systems, you may need to use python instead of python3.
+### Vision (Image Input) Models
+Supports image URLs or base64-encoded images in the `messages` array:
+- `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`
 
-### Docker (recommended for ease of deployment)
+### Image Generation Models
+- **Stability AI**: `stable-image`, `stable-diffusion-xl-1024-v1-0`, `stable-diffusion-v1-6`, `esrgan-v1-x2plus`
+- **Clipdrop**: `clipdrop`
+- **Midjourney**: `midjourney`, `midjourney_6_1`
+- **Leonardo AI**: `LEONARDO_PHOENIX`, `LEONARDO_LIGHTNING_XL`, `LEONARDO_ANIME_XL`, `LEONARDO_DIFFUSION_XL`, `LEONARDO_KINO_XL`, `LEONARDO_ALBEDO_BASE_XL`
+- **Black Forest Labs**: `black-forest-labs/flux-schnell`
 
-Pre-built images
-- Pull the image:
-  - docker pull kokofixcomputers/1min-relay:latest
-- Create a dedicated network (recommended for memcached communication):
-  - docker network create 1min-relay-network
-- Start Memcached:
-  - docker run -d --name memcached --network 1min-relay-network memcached
-- Run the 1min-relay container:
-  - docker run -d --name 1min-relay-container --network 1min-relay-network -p 5001:5001 \
-    -e SUBSET_OF_ONE_MIN_PERMITTED_MODELS="mistral-nemo,gpt-4o-mini,deepseek-chat" \
-    -e PERMIT_MODELS_FROM_SUBSET_ONLY=True \
-    kokofixcomputers/1min-relay:latest
+## Quick Deployment (Recommended: Docker Compose)
 
-Environment variables
-- SUBSET_OF_ONE_MIN_PERMITTED_MODELS: Subset of 1min.ai models to expose. Default: mistral-nemo,gpt-4o,deepseek-chat.
-- PERMIT_MODELS_FROM_SUBSET_ONLY: Restrict model usage to the specified subset. Set to True to enforce, False to allow all models supported by 1min.ai. Default: True.
+### Using the Pre-built GHCR Image
 
-Self-build (Docker image from source)
-1) Build the Docker image:
-   - docker build -t 1min-relay:latest .
-2) Create a dedicated network:
-   - docker network create 1min-relay-network
-3) Run Memcached:
-   - docker run -d --name memcached --network 1min-relay-network memcached
-4) Run the 1min-relay container:
-   - docker run -d --name 1min-relay-container --network 1min-relay-network -p 5001:5001 \
-     -e SUBSET_OF_ONE_MIN_PERMITTED_MODELS="mistral-nemo,gpt-4o-mini,deepseek-chat" \
-     -e PERMIT_MODELS_FROM_SUBSET_ONLY=True \
-     1min-relay:latest
+```bash
+# 1. Download docker-compose.yml
+curl -O https://raw.githubusercontent.com/jjnexus/1min-relay/main/docker-compose.yml
 
-Notes
-- The container port 5001 is exposed to the host for API access.
-- When using Docker Compose, you can simplify networking and service orchestration (see repository for a provided compose file).
+# 2. Start services
+docker compose up -d
 
-Verification
-- Check container logs:
-  - docker logs -f 1min-relay-container
-- Test the API endpoint (example):
-  - curl -X GET http://localhost:5001/v1/models
+# 3. Verify
+curl http://localhost:5001/v1/models
+```
 
-### If you find this project useful, please consider starring the repository and supporting us through the provided donation or paid hosted options.
+Once running, configure any OpenAI-compatible client with:
+- **API Base URL**: `http://your-server-ip:5001/v1`
+- **API Key**: Your 1min.ai API key (available at https://app.1min.ai/api)
+
+### Environment Variables
+
+Adjust in the `environment` section of `docker-compose.yml`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SUBSET_OF_ONE_MIN_PERMITTED_MODELS` | `mistral-nemo,gpt-4o,deepseek-chat` | Comma-separated list of models to expose |
+| `PERMIT_MODELS_FROM_SUBSET_ONLY` | `False` | Set to `True` to reject requests for models outside the list |
+
+### Build from Source
+
+```bash
+git clone https://github.com/jjnexus/1min-relay.git
+cd 1min-relay
+docker compose up -d --build
+```
+
+## Local Development
+
+Requires Python 3.10+ and [uv](https://github.com/astral-sh/uv).
+
+```bash
+git clone https://github.com/jjnexus/1min-relay.git
+cd 1min-relay
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+python main.py
+```
+
+## CI/CD
+
+Pushing to the `main` branch automatically triggers a GitHub Actions workflow that builds multi-platform images (`linux/amd64` and `linux/arm64`) and pushes them to GHCR:
+
+```
+ghcr.io/jjnexus/1min-relay:latest
+```
+
+To update a running VPS deployment:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+## Security
+
+- **SSRF protection**: Vision image URLs are validated before fetching — only HTTPS is allowed, and private IP ranges, loopback addresses, and cloud metadata endpoints (e.g. `169.254.169.254`) are blocked.
+- **API key validation**: Every request validates the 1min.ai API key before forwarding.
+
+## License
+
+Based on the upstream [kokofixcomputers/1min-relay](https://github.com/kokofixcomputers/1min-relay). See [LICENSE](LICENSE) for details.
